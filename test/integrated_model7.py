@@ -30,7 +30,7 @@ ALPHA_VANTAGE_API_KEY = st.secrets.get("ALPHA_VANTAGE_API_KEY", "")
 
 # Authentication Configuration
 AUTHORIZED_USERS = {
-    "kibe50067@gmail.com": "mikey13nk"
+    "kibe507@gmail.com": "mike"
 }
 
 # Configure Gemini
