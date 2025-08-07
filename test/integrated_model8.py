@@ -1,0 +1,1673 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import json
+import datetime
+import time
+import asyncio
+import aiohttp
+import requests
+import hashlib
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, asdict
+from enum import Enum
+import plotly.graph_objects as go
+import plotly.express as px
+from abc import ABC, abstractmethod
+import logging
+import google.generativeai as genai
+import yfinance as yf
+from alpha_vantage.timeseries import TimeSeries
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+import queue
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+ALPHA_VANTAGE_API_KEY = st.secrets.get("ALPHA_VANTAGE_API_KEY", "")
+
+# Authentication Configuration
+AUTHORIZED_USERS = {
+    "kibe50067@gmail.com": "mikey13nk"
+}
+
+# Configure Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+
+# Initialize session state for smooth operations
+def initialize_session_state():
+    """Initialize session state variables for smooth operations"""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'user_email' not in st.session_state:
+        st.session_state.user_email = None
+    if 'processing_tasks' not in st.session_state:
+        st.session_state.processing_tasks = set()
+    if 'task_results' not in st.session_state:
+        st.session_state.task_results = {}
+    if 'last_market_update' not in st.session_state:
+        st.session_state.last_market_update = datetime.datetime.now()
+    if 'market_data_cache' not in st.session_state:
+        st.session_state.market_data_cache = {}
+    if 'notification_queue' not in st.session_state:
+        st.session_state.notification_queue = queue.Queue()
+    if 'auto_refresh' not in st.session_state:
+        st.session_state.auto_refresh = False
+
+
+def show_notifications():
+    """Display notifications without blocking the UI"""
+    try:
+        while not st.session_state.notification_queue.empty():
+            notification = st.session_state.notification_queue.get_nowait()
+            if notification['type'] == 'success':
+                st.success(notification['message'])
+            elif notification['type'] == 'error':
+                st.error(notification['message'])
+            elif notification['type'] == 'info':
+                st.info(notification['message'])
+            elif notification['type'] == 'warning':
+                st.warning(notification['message'])
+    except queue.Empty:
+        pass
+
+
+def add_notification(message: str, notification_type: str = 'info'):
+    """Add notification to queue"""
+    st.session_state.notification_queue.put({
+        'message': message,
+        'type': notification_type
+    })
+
+
+def authenticate_user(email: str, password: str) -> bool:
+    """Authenticate user credentials"""
+    return email in AUTHORIZED_USERS and AUTHORIZED_USERS[email] == password
+
+
+def login_page():
+    """Display login page with enhanced styling"""
+    st.set_page_config(page_title="AI Trading System - Login", layout="centered")
+
+    # Custom CSS for better styling
+    st.markdown("""
+    <style>
+    .main-header {
+        text-align: center;
+        color: #1f77b4;
+        margin-bottom: 2rem;
+        animation: fadeIn 1s ease-in;
+    }
+    .login-container {
+        max-width: 400px;
+        margin: 0 auto;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        background-color: #f8f9fa;
+        animation: slideUp 0.8s ease-out;
+    }
+    .stButton > button {
+        width: 100%;
+        background: linear-gradient(90deg, #1f77b4, #0d5aa7);
+        color: white;
+        border: none;
+        border-radius: 5px;
+        padding: 0.75rem;
+        font-size: 1rem;
+        margin-top: 1rem;
+        transition: all 0.3s ease;
+    }
+    .stButton > button:hover {
+        background: linear-gradient(90deg, #0d5aa7, #1f77b4);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(31, 119, 180, 0.4);
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+    @keyframes slideUp {
+        from { transform: translateY(30px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+    }
+    .pulse {
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🤖 AI Trading Agent Management System</h1>
+        <h3>Secure Login Portal</h3>
+        <p>Multi-Agent Trading System with Real-Time Market Data & Gemini AI</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Login form container
+    with st.container():
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown("### 🔐 Please Login")
+
+        # Login form
+        with st.form("login_form", clear_on_submit=False):
+            email = st.text_input("📧 Email Address", placeholder="Enter your email address")
+            password = st.text_input("🔑 Password", type="password", placeholder="Enter your password")
+
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                login_button = st.form_submit_button("🚀 Login")
+
+            if login_button:
+                if email and password:
+                    with st.spinner("Authenticating..."):
+                        if authenticate_user(email, password):
+                            st.session_state.authenticated = True
+                            st.session_state.user_email = email
+                            add_notification("Login successful! Welcome to the AI Trading System", 'success')
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Invalid email or password. Please try again.")
+                else:
+                    st.warning("⚠️ Please enter both email and password.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Footer
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col2:
+        st.markdown("""
+        <div style="text-align: center; color: #666;">
+            <p><small>🔒 Secure Access Required</small></p>
+            <p><small>Powered by Streamlit & Gemini AI</small></p>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def logout():
+    """Handle user logout"""
+    st.session_state.authenticated = False
+    st.session_state.user_email = None
+    st.session_state.processing_tasks.clear()
+    st.session_state.task_results.clear()
+    add_notification("Logged out successfully", 'info')
+    st.rerun()
+
+
+def check_authentication():
+    """Check if user is authenticated"""
+    initialize_session_state()
+
+    if not st.session_state.authenticated:
+        login_page()
+        return False
+    return True
+
+
+class AgentStatus(Enum):
+    ACTIVE = "Active"
+    IDLE = "Idle"
+    ERROR = "Error"
+    MAINTENANCE = "Maintenance"
+    PROCESSING = "Processing"
+
+
+class TaskPriority(Enum):
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    CRITICAL = 4
+
+
+@dataclass
+class MarketData:
+    symbol: str
+    current_price: float
+    change: float
+    change_percent: float
+    volume: int
+    timestamp: datetime.datetime
+    high_52w: float = 0.0
+    low_52w: float = 0.0
+    market_cap: float = 0.0
+
+
+@dataclass
+class AgentMetrics:
+    tasks_completed: int = 0
+    success_rate: float = 0.0
+    avg_processing_time: float = 0.0
+    last_activity: Optional[datetime.datetime] = None
+    errors_count: int = 0
+    api_calls_made: int = 0
+
+
+@dataclass
+class Task:
+    id: str
+    agent_id: str
+    description: str
+    priority: TaskPriority
+    market_data: Optional[Dict[str, MarketData]] = None
+    status: str = "Pending"
+    created_at: datetime.datetime = None
+    completed_at: Optional[datetime.datetime] = None
+    result: Optional[str] = None
+    processing_time: float = 0.0
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.datetime.now()
+
+
+class MarketDataProvider:
+    """Enhanced market data provider with caching and async support"""
+
+    def __init__(self):
+        self.alpha_vantage = None
+        self.cache = {}
+        self.cache_timeout = 60  # 1 minute cache
+        if ALPHA_VANTAGE_API_KEY:
+            self.alpha_vantage = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+
+    def _is_cache_valid(self, symbol: str) -> bool:
+        """Check if cached data is still valid"""
+        if symbol not in self.cache:
+            return False
+        cache_time = self.cache[symbol].get('timestamp')
+        if not cache_time:
+            return False
+        return (datetime.datetime.now() - cache_time).seconds < self.cache_timeout
+
+    def get_stock_price(self, symbol: str, use_cache: bool = True) -> Dict[str, Any]:
+        """Get real-time stock price with caching"""
+        if use_cache and self._is_cache_valid(symbol):
+            return self.cache[symbol]['data']
+
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            hist = ticker.history(period="1d", interval="1m")
+
+            if not hist.empty:
+                current_price = hist['Close'].iloc[-1]
+                data = {
+                    "symbol": symbol,
+                    "current_price": float(current_price),
+                    "open": float(hist['Open'].iloc[0]),
+                    "high": float(hist['High'].max()),
+                    "low": float(hist['Low'].min()),
+                    "volume": int(hist['Volume'].sum()),
+                    "market_cap": info.get('marketCap', 0),
+                    "pe_ratio": info.get('trailingPE', 0),
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+
+                # Cache the result
+                self.cache[symbol] = {
+                    'data': data,
+                    'timestamp': datetime.datetime.now()
+                }
+                return data
+        except Exception as e:
+            logger.error(f"Error fetching data for {symbol}: {e}")
+            return {"error": str(e)}
+
+    def get_market_overview(self, use_cache: bool = True) -> Dict[str, Any]:
+        """Get market overview data with caching"""
+        cache_key = "market_overview"
+        if use_cache and self._is_cache_valid(cache_key):
+            return self.cache[cache_key]['data']
+
+        try:
+            indices = ['^GSPC', '^DJI', '^IXIC']
+            market_data = {}
+
+            for index in indices:
+                ticker = yf.Ticker(index)
+                hist = ticker.history(period="2d")
+                if not hist.empty:
+                    current = hist['Close'].iloc[-1]
+                    previous = hist['Close'].iloc[-2] if len(hist) > 1 else current
+                    change = ((current - previous) / previous) * 100
+
+                    market_data[index] = {
+                        "current": float(current),
+                        "change_percent": float(change),
+                        "volume": int(hist['Volume'].iloc[-1])
+                    }
+
+            # Cache the result
+            self.cache[cache_key] = {
+                'data': market_data,
+                'timestamp': datetime.datetime.now()
+            }
+            return market_data
+        except Exception as e:
+            logger.error(f"Error fetching market overview: {e}")
+            return {"error": str(e)}
+
+    def get_crypto_prices(self, symbols: List[str] = None, use_cache: bool = True) -> Dict[str, Any]:
+        """Get cryptocurrency prices with caching"""
+        if symbols is None:
+            symbols = ['BTC-USD', 'ETH-USD', 'ADA-USD']
+
+        cache_key = "crypto_prices"
+        if use_cache and self._is_cache_valid(cache_key):
+            return self.cache[cache_key]['data']
+
+        crypto_data = {}
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                hist = ticker.history(period="1d")
+                if not hist.empty:
+                    crypto_data[symbol] = {
+                        "current_price": float(hist['Close'].iloc[-1]),
+                        "change_24h": float(
+                            ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100)
+                    }
+            except Exception as e:
+                logger.error(f"Error fetching crypto data for {symbol}: {e}")
+
+        # Cache the result
+        self.cache[cache_key] = {
+            'data': crypto_data,
+            'timestamp': datetime.datetime.now()
+        }
+        return crypto_data
+
+    def get_stock_data(self, symbols: List[str], use_cache: bool = True) -> Dict[str, MarketData]:
+        """Enhanced stock data method with caching"""
+        market_data = {}
+
+        for symbol in symbols:
+            try:
+                stock_info = self.get_stock_price(symbol, use_cache)
+                if "error" not in stock_info:
+                    # Convert to MarketData format
+                    prev_close = stock_info.get('open', stock_info['current_price'])
+                    change = stock_info['current_price'] - prev_close
+                    change_percent = (change / prev_close) * 100 if prev_close != 0 else 0
+
+                    market_data[symbol] = MarketData(
+                        symbol=symbol,
+                        current_price=float(stock_info['current_price']),
+                        change=float(change),
+                        change_percent=float(change_percent),
+                        volume=int(stock_info.get('volume', 0)),
+                        timestamp=datetime.datetime.now(),
+                        high_52w=float(stock_info.get('high', 0)),
+                        low_52w=float(stock_info.get('low', 0)),
+                        market_cap=int(stock_info.get('market_cap', 0))
+                    )
+                else:
+                    market_data[symbol] = self._generate_mock_data(symbol)
+            except Exception as e:
+                logger.error(f"Error fetching data for {symbol}: {e}")
+                market_data[symbol] = self._generate_mock_data(symbol)
+
+        return market_data
+
+    def _generate_mock_data(self, symbol: str) -> MarketData:
+        """Generate realistic mock market data"""
+        base_prices = {
+            'AAPL': 175.0, 'MSFT': 340.0, 'GOOGL': 135.0, 'AMZN': 145.0,
+            'TSLA': 210.0, 'NVDA': 420.0, 'META': 315.0, 'NFLX': 450.0
+        }
+
+        base_price = base_prices.get(symbol, 100.0)
+        current_price = base_price * (1 + np.random.normal(0, 0.02))
+        change = np.random.normal(0, 2.0)
+        change_percent = (change / current_price) * 100
+
+        return MarketData(
+            symbol=symbol,
+            current_price=current_price,
+            change=change,
+            change_percent=change_percent,
+            volume=np.random.randint(1000000, 10000000),
+            timestamp=datetime.datetime.now(),
+            high_52w=current_price * 1.3,
+            low_52w=current_price * 0.7,
+            market_cap=int(current_price * 1000000000)
+        )
+
+
+class GeminiClient:
+    def __init__(self):
+        self.model = None
+        if GEMINI_API_KEY:
+            try:
+                self.model = genai.GenerativeModel('gemini-pro')
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini: {e}")
+
+    def generate_response(self, prompt: str, context: str = "") -> str:
+        """Generate response using Gemini API with timeout"""
+        if not self.model:
+            return self._fallback_response(prompt)
+
+        try:
+            full_prompt = f"{context}\n\n{prompt}" if context else prompt
+            response = self.model.generate_content(full_prompt)
+            return response.text
+        except Exception as e:
+            logger.error(f"Gemini API error: {e}")
+            return self._fallback_response(prompt)
+
+    def _fallback_response(self, prompt: str) -> str:
+        """Fallback response when Gemini is unavailable"""
+        return f"AI Analysis: Processing task '{prompt[:50]}...' - Gemini API temporarily unavailable, using fallback analysis."
+
+
+class BaseAgent(ABC):
+    def __init__(self, agent_id: str, name: str, description: str):
+        self.agent_id = agent_id
+        self.name = name
+        self.description = description
+        self.status = AgentStatus.IDLE
+        self.metrics = AgentMetrics()
+        self.tasks_queue = []
+        self.current_task = None
+        self.gemini_client = GeminiClient()
+        self.market_provider = MarketDataProvider()
+        self.executor = ThreadPoolExecutor(max_workers=2)
+
+    @abstractmethod
+    def get_agent_prompt(self) -> str:
+        """Get the specific prompt for this agent type"""
+        pass
+
+    def process_task_async(self, task: Task) -> None:
+        """Process task asynchronously"""
+
+        def process_in_thread():
+            try:
+                # Add task to processing set
+                st.session_state.processing_tasks.add(task.id)
+                self.status = AgentStatus.PROCESSING
+
+                start_time = time.time()
+
+                # Build market context
+                market_context = ""
+                if task.market_data:
+                    market_summary = []
+                    for symbol, data in task.market_data.items():
+                        if isinstance(data, MarketData):
+                            market_summary.append(
+                                f"{symbol}: ${data.current_price:.2f} "
+                                f"({data.change_percent:+.2f}%), Volume: {data.volume:,}"
+                            )
+                        else:
+                            market_summary.append(f"{symbol}: {data}")
+                    market_context = f"Current Market Data:\n" + "\n".join(market_summary)
+
+                agent_prompt = self.get_agent_prompt()
+                full_prompt = f"""
+{agent_prompt}
+
+Task: {task.description}
+
+{market_context}
+
+Please provide a detailed analysis and recommendation based on your role as {self.name}.
+"""
+
+                # Generate response
+                result = self.gemini_client.generate_response(full_prompt, market_context)
+
+                end_time = time.time()
+                processing_time = end_time - start_time
+
+                # Update task
+                task.status = "Completed"
+                task.completed_at = datetime.datetime.now()
+                task.result = result
+                task.processing_time = processing_time
+
+                # Update metrics
+                self.metrics.tasks_completed += 1
+                self.metrics.last_activity = datetime.datetime.now()
+                self.metrics.avg_processing_time = (
+                        (self.metrics.avg_processing_time * (self.metrics.tasks_completed - 1) + processing_time)
+                        / self.metrics.tasks_completed
+                )
+                self.metrics.success_rate = (
+                        (self.metrics.tasks_completed - self.metrics.errors_count) / self.metrics.tasks_completed * 100
+                )
+                self.metrics.api_calls_made += 1
+
+                # Store result in session state
+                st.session_state.task_results[task.id] = task
+
+                # Add success notification
+                add_notification(f"Task {task.id} completed successfully by {self.name}", 'success')
+
+            except Exception as e:
+                task.status = "Failed"
+                task.result = f"Error: {str(e)}"
+                task.completed_at = datetime.datetime.now()
+                self.metrics.errors_count += 1
+
+                st.session_state.task_results[task.id] = task
+                add_notification(f"Task {task.id} failed: {str(e)}", 'error')
+
+                logger.error(f"Agent {self.agent_id} failed to process task {task.id}: {e}")
+
+            finally:
+                # Remove from processing set and update status
+                st.session_state.processing_tasks.discard(task.id)
+                self.status = AgentStatus.IDLE
+                self.current_task = None
+
+        # Submit to thread pool
+        self.executor.submit(process_in_thread)
+
+    def add_task(self, task: Task):
+        """Add task to queue with market data"""
+        if not task.market_data:
+            try:
+                task.market_data = self.market_provider.get_stock_data(['AAPL', 'MSFT', 'GOOGL', 'AMZN'])
+            except:
+                task.market_data = {}
+
+        self.tasks_queue.append(task)
+        self.tasks_queue.sort(key=lambda x: x.priority.value, reverse=True)
+
+    def execute_next_task(self) -> Optional[Task]:
+        """Execute next task asynchronously"""
+        if not self.tasks_queue:
+            return None
+
+        task = self.tasks_queue.pop(0)
+        self.current_task = task
+
+        # Process asynchronously
+        self.process_task_async(task)
+
+        return task
+
+
+# Specialized Agent Implementations (keeping the same structure but with async processing)
+class TradingStrategistAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("TS001", "AI Trading Strategist",
+                         "Defines investment philosophy, risk tolerance, and performance goals")
+
+    def get_agent_prompt(self) -> str:
+        return """You are an AI Trading Strategist responsible for developing investment strategies.
+        Your role is to:
+        - Define investment philosophy and approach
+        - Set risk tolerance parameters
+        - Establish performance goals and benchmarks
+        - Analyze market conditions and trends
+        - Recommend strategic asset allocation
+
+        Consider current market conditions, economic indicators, and risk factors when making recommendations."""
+
+
+class QuantAnalystAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("QA001", "Quantitative Analyst",
+                         "Develops mathematical models to identify market inefficiencies")
+
+    def get_agent_prompt(self) -> str:
+        return """You are a Quantitative Analyst specializing in mathematical modeling for trading.
+        Your role is to:
+        - Develop statistical models for price prediction
+        - Identify market inefficiencies and arbitrage opportunities
+        - Analyze correlations and patterns in market data
+        - Calculate risk metrics and volatility measures
+        - Create backtesting frameworks
+
+        Use quantitative methods and provide specific numerical analysis based on the market data."""
+
+
+class MLEngineerAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("MLE001", "Machine Learning Engineer",
+                         "Transforms models into scalable, production-ready software")
+
+    def get_agent_prompt(self) -> str:
+        return """You are a Machine Learning Engineer focused on production trading systems.
+        Your role is to:
+        - Design scalable ML pipelines for real-time trading
+        - Optimize model performance and latency
+        - Implement feature engineering for market data
+        - Ensure system reliability and monitoring
+        - Handle data preprocessing and model deployment
+
+        Focus on technical implementation details and system architecture."""
+
+
+class DataEngineerAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("DE001", "Data Engineer",
+                         "Designs and maintains data infrastructure and ETL processes")
+
+    def get_agent_prompt(self) -> str:
+        return """You are a Data Engineer responsible for market data infrastructure.
+        Your role is to:
+        - Design ETL pipelines for market data ingestion
+        - Ensure data quality and integrity
+        - Optimize data storage and retrieval systems
+        - Manage real-time data feeds and APIs
+        - Monitor data pipeline performance
+
+        Focus on data architecture, quality, and system reliability."""
+
+
+class RiskModelerAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("RM001", "AI Risk Modeler",
+                         "Builds models to assess potential risks and mitigate losses")
+
+    def get_agent_prompt(self) -> str:
+        return """You are an AI Risk Modeler specializing in trading risk assessment.
+        Your role is to:
+        - Calculate Value at Risk (VaR) and Expected Shortfall
+        - Analyze portfolio concentration and correlation risks
+        - Model stress testing scenarios
+        - Assess market, credit, and operational risks
+        - Recommend risk mitigation strategies
+
+        Provide specific risk metrics and actionable risk management recommendations."""
+
+
+class AuditorAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("AU001", "AI Auditor",
+                         "Examines decision-making processes and ensures transparency")
+
+    def get_agent_prompt(self) -> str:
+        return """You are an AI Auditor responsible for system transparency and accountability.
+        Your role is to:
+        - Review AI decision-making processes
+        - Ensure algorithmic transparency and explainability
+        - Verify compliance with trading regulations
+        - Audit system logs and trade decisions
+        - Identify potential bias or errors in models
+
+        Focus on governance, transparency, and regulatory compliance."""
+
+
+class TranslatorAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("TR001", "AI Translator",
+                         "Bridges technical AI systems and non-technical stakeholders")
+
+    def get_agent_prompt(self) -> str:
+        return """You are an AI Translator responsible for communicating complex analysis to stakeholders.
+        Your role is to:
+        - Translate technical analysis into business language
+        - Create executive summaries and reports
+        - Explain AI recommendations in simple terms
+        - Provide actionable insights for decision makers
+        - Communicate risks and opportunities clearly
+
+        Focus on clear, non-technical communication that drives business decisions."""
+
+
+class ComplianceOfficerAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("CO001", "Compliance Officer",
+                         "Ensures adherence to financial regulations and ethical practices")
+
+    def get_agent_prompt(self) -> str:
+        return """You are a Compliance Officer ensuring regulatory adherence in AI trading.
+        Your role is to:
+        - Monitor compliance with financial regulations (SEC, FINRA, etc.)
+        - Ensure adherence to trading rules and market regulations
+        - Review trades for compliance violations
+        - Implement compliance controls and procedures
+        - Report on regulatory compliance status
+
+        Focus on regulatory requirements and compliance risk assessment."""
+
+
+class TrustAuthenticatorAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("TA001", "Trust Authenticator",
+                         "Verifies factual accuracy and fairness of AI outputs")
+
+    def get_agent_prompt(self) -> str:
+        return """You are a Trust Authenticator responsible for verifying AI output accuracy.
+        Your role is to:
+        - Verify factual accuracy of AI recommendations
+        - Check for bias in algorithmic decisions
+        - Validate data sources and calculations
+        - Ensure fairness in trading recommendations
+        - Authenticate the reliability of AI outputs
+
+        Focus on accuracy, bias detection, and trustworthiness of AI systems."""
+
+
+class EthicistAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("ET001", "AI Ethicist",
+                         "Develops ethical guidelines and ensures fair, transparent decisions")
+
+    def get_agent_prompt(self) -> str:
+        return """You are an AI Ethicist ensuring ethical trading practices.
+        Your role is to:
+        - Develop ethical guidelines for AI trading
+        - Assess the fairness and transparency of trading decisions
+        - Identify potential ethical conflicts or issues
+        - Ensure responsible AI deployment
+        - Balance profit objectives with ethical considerations
+
+        Focus on ethical implications and responsible AI practices."""
+
+
+class LegalGuarantorAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("LG001", "Legal Guarantor",
+                         "Takes legal responsibility for AI actions and decisions")
+
+    def get_agent_prompt(self) -> str:
+        return """You are a Legal Guarantor providing legal oversight for AI trading decisions.
+        Your role is to:
+        - Assess legal liability of AI trading decisions
+        - Ensure compliance with securities laws
+        - Review contracts and legal agreements
+        - Manage legal risk from AI operations
+        - Provide legal accountability framework
+
+        Focus on legal risk assessment and liability management."""
+
+
+class ArchitectAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("AR001", "AI Agent Architect",
+                         "Designs system architecture and integrations")
+
+    def get_agent_prompt(self) -> str:
+        return """You are an AI Agent Architect designing trading system architecture.
+        Your role is to:
+        - Design scalable system architecture
+        - Plan integration with external data sources and trading platforms
+        - Ensure system security and reliability
+        - Optimize system performance and throughput
+        - Coordinate between different system components
+
+        Focus on technical architecture, scalability, and system integration."""
+
+
+class ManagerAgent:
+    def __init__(self):
+        self.agents = {
+            "trading_strategist": TradingStrategistAgent(),
+            "quant_analyst": QuantAnalystAgent(),
+            "ml_engineer": MLEngineerAgent(),
+            "data_engineer": DataEngineerAgent(),
+            "risk_modeler": RiskModelerAgent(),
+            "auditor": AuditorAgent(),
+            "translator": TranslatorAgent(),
+            "compliance_officer": ComplianceOfficerAgent(),
+            "trust_authenticator": TrustAuthenticatorAgent(),
+            "ethicist": EthicistAgent(),
+            "legal_guarantor": LegalGuarantorAgent(),
+            "architect": ArchitectAgent()
+        }
+        self.task_history = []
+        self.market_provider = MarketDataProvider()
+        self.system_metrics = {
+            "total_tasks": 0,
+            "completed_tasks": 0,
+            "failed_tasks": 0,
+            "system_uptime": 0.0,
+            "total_api_calls": 0
+        }
+
+    def assign_task(self, agent_key: str, description: str, priority: TaskPriority) -> str:
+        """Assign task to agent asynchronously"""
+        if agent_key not in self.agents:
+            return f"Error: Agent {agent_key} not found"
+
+        task_id = f"TASK_{len(self.task_history):04d}_{int(time.time())}"
+        task = Task(
+            id=task_id,
+            agent_id=self.agents[agent_key].agent_id,
+            description=description,
+            priority=priority
+        )
+
+        self.agents[agent_key].add_task(task)
+        self.task_history.append(task)
+        self.system_metrics["total_tasks"] += 1
+
+        # Start processing immediately
+        self.agents[agent_key].execute_next_task()
+
+        add_notification(f"Task {task_id} assigned to {self.agents[agent_key].name} and processing started", 'info')
+        return task_id
+
+    def execute_all_pending_tasks(self):
+        """Execute all pending tasks asynchronously"""
+        executed_count = 0
+        for agent in self.agents.values():
+            while agent.tasks_queue:
+                agent.execute_next_task()
+                executed_count += 1
+
+        if executed_count > 0:
+            add_notification(f"Started processing {executed_count} tasks asynchronously", 'info')
+        return executed_count
+
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get current system status including processing tasks"""
+        active_agents = sum(1 for agent in self.agents.values() if agent.status == AgentStatus.PROCESSING)
+        total_pending_tasks = sum(len(agent.tasks_queue) for agent in self.agents.values())
+        processing_tasks = len(st.session_state.processing_tasks)
+
+        # Update completed/failed tasks from session state
+        completed_from_session = len([task for task in st.session_state.task_results.values()
+                                      if task.status == "Completed"])
+        failed_from_session = len([task for task in st.session_state.task_results.values()
+                                   if task.status == "Failed"])
+
+        return {
+            "active_agents": active_agents,
+            "total_agents": len(self.agents),
+            "pending_tasks": total_pending_tasks,
+            "processing_tasks": processing_tasks,
+            "system_health": "Processing" if processing_tasks > 0 else "Healthy" if total_pending_tasks == 0 else "Warning",
+            "completed_tasks": completed_from_session,
+            "failed_tasks": failed_from_session,
+            "total_tasks": self.system_metrics["total_tasks"],
+            "total_api_calls": sum(agent.metrics.api_calls_made for agent in self.agents.values())
+        }
+
+    def get_current_market_data(self, use_cache: bool = True) -> Dict[str, MarketData]:
+        """Get current market data with caching for smooth UI"""
+        return self.market_provider.get_stock_data(['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX'],
+                                                   use_cache)
+
+    def get_market_dashboard_data(self, use_cache: bool = True):
+        """Get comprehensive market data for dashboard with caching"""
+        return {
+            "market_overview": self.market_provider.get_market_overview(use_cache),
+            "crypto_prices": self.market_provider.get_crypto_prices(use_cache=use_cache),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+    def get_task_results(self) -> List[Task]:
+        """Get completed task results from session state"""
+        return list(st.session_state.task_results.values())
+
+
+# Initialize the manager with caching
+@st.cache_resource
+def get_manager():
+    return ManagerAgent()
+
+
+def display_market_data_sidebar(market_data: Dict[str, MarketData]):
+    """Display current market data in the sidebar with smooth updates"""
+    st.subheader("📈 Live Market Data")
+
+    # Add refresh button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption(f"Last updated: {datetime.datetime.now().strftime('%H:%M:%S')}")
+    with col2:
+        if st.button("🔄", help="Refresh market data", key="market_refresh"):
+            # Clear cache for fresh data
+            manager = get_manager()
+            manager.market_provider.cache.clear()
+            st.rerun()
+
+    for symbol, data in market_data.items():
+        if isinstance(data, MarketData):
+            delta_color = "normal" if data.change >= 0 else "inverse"
+            st.metric(
+                label=symbol,
+                value=f"${data.current_price:.2f}",
+                delta=f"{data.change_percent:+.2f}%",
+                delta_color=delta_color
+            )
+
+
+def display_processing_status():
+    """Display current processing status"""
+    if st.session_state.processing_tasks:
+        st.info(f"🔄 Processing {len(st.session_state.processing_tasks)} task(s) in background...")
+
+        # Show processing tasks
+        with st.expander("View Processing Tasks"):
+            for task_id in st.session_state.processing_tasks:
+                st.write(f"• Task {task_id}")
+
+
+def display_agent_cards():
+    """Display agent status cards with real-time updates"""
+    manager = get_manager()
+
+    cols = st.columns(3)
+    for i, (key, agent) in enumerate(manager.agents.items()):
+        with cols[i % 3]:
+            # Determine status color and icon
+            if agent.status == AgentStatus.PROCESSING:
+                status_icon = "🔄"
+                status_color = "#FFA500"  # Orange
+            elif agent.status == AgentStatus.ACTIVE:
+                status_icon = "🟢"
+                status_color = "#00FF00"  # Green
+            elif agent.status == AgentStatus.IDLE:
+                status_icon = "🟡"
+                status_color = "#FFFF00"  # Yellow
+            elif agent.status == AgentStatus.ERROR:
+                status_icon = "🔴"
+                status_color = "#FF0000"  # Red
+            else:
+                status_icon = "⚪"
+                status_color = "#CCCCCC"  # Gray
+
+            ai_status = "🤖 AI Enabled" if agent.gemini_client.model else "🔧 Fallback Mode"
+
+            # Create status card with custom styling
+            st.markdown(f"""
+            <div style="
+                border: 2px solid {status_color};
+                border-radius: 10px;
+                padding: 15px;
+                margin: 10px 0;
+                background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+                backdrop-filter: blur(10px);
+            ">
+                <h4 style="margin: 0; color: {status_color};">{status_icon} {agent.name}</h4>
+                <p style="margin: 5px 0;"><strong>Status:</strong> {agent.status.value}</p>
+                <p style="margin: 5px 0;">{ai_status}</p>
+                <p style="margin: 5px 0;"><strong>Completed:</strong> {agent.metrics.tasks_completed}</p>
+                <p style="margin: 5px 0;"><strong>Success Rate:</strong> {agent.metrics.success_rate:.1f}%</p>
+                <p style="margin: 5px 0;"><strong>Queue:</strong> {len(agent.tasks_queue)} tasks</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+def main():
+    # Check authentication first
+    if not check_authentication():
+        return
+
+    st.set_page_config(
+        page_title="AI Trading Agent Management System",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Custom CSS for smooth animations and modern design
+    st.markdown("""
+    <style>
+    .main {
+        padding-top: 1rem;
+    }
+    .stMetric {
+        background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+        padding: 1rem;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.2);
+        backdrop-filter: blur(10px);
+    }
+    .processing-indicator {
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    .task-card {
+        background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        border-left: 4px solid #1f77b4;
+        transition: all 0.3s ease;
+    }
+    .task-card:hover {
+        transform: translateX(5px);
+        box-shadow: 0 4px 12px rgba(31, 119, 180, 0.3);
+    }
+    .notification {
+        animation: slideIn 0.5s ease-out;
+    }
+    @keyframes slideIn {
+        from { transform: translateX(-100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Header with logout option
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.title("🤖 AI Trading Agent Management System")
+        st.markdown("**Multi-Agent Trading System with Real-Time Market Data & Gemini AI**")
+    with col2:
+        st.markdown(f"**Welcome:** {st.session_state.user_email}")
+        if st.button("🚪 Logout", type="secondary"):
+            logout()
+
+    # Show notifications
+    show_notifications()
+
+    # API Configuration Alert
+    if not GEMINI_API_KEY:
+        st.warning("⚠️ Gemini API key not configured. Add GEMINI_API_KEY to Streamlit secrets for full functionality.")
+
+    manager = get_manager()
+
+    # Get current market data (cached for smooth performance)
+    try:
+        market_data = manager.get_current_market_data(use_cache=True)
+    except Exception as e:
+        st.error(f"Error fetching market data: {e}")
+        market_data = {}
+
+    # Sidebar for system controls and market data
+    with st.sidebar:
+        # User info
+        st.markdown(f"**👤 Logged in as:**")
+        st.info(f"{st.session_state.user_email}")
+
+        st.header("System Controls")
+
+        # Auto-refresh toggle
+        st.session_state.auto_refresh = st.checkbox("🔄 Auto-refresh (30s)", value=st.session_state.auto_refresh)
+
+        if st.button("🔄 Refresh All Data", type="secondary"):
+            manager.market_provider.cache.clear()
+            add_notification("All data refreshed", 'info')
+            st.rerun()
+
+        if st.button("▶️ Execute All Pending Tasks", type="primary"):
+            executed_count = manager.execute_all_pending_tasks()
+            if executed_count == 0:
+                add_notification("No pending tasks to execute", 'info')
+
+        # Display market data
+        if market_data:
+            display_market_data_sidebar(market_data)
+
+        st.header("System Status")
+        status = manager.get_system_status()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Active Agents", status["active_agents"])
+            st.metric("Processing", status["processing_tasks"], help="Tasks currently being processed")
+        with col2:
+            st.metric("Completed", status["completed_tasks"])
+            st.metric("API Calls", status["total_api_calls"])
+
+        # System health indicator
+        health_color = {
+            "Healthy": "🟢",
+            "Processing": "🟡",
+            "Warning": "🟠",
+            "Error": "🔴"
+        }.get(status['system_health'], "⚪")
+
+        st.markdown(f"**System Health:** {health_color} {status['system_health']}")
+
+    # Display processing status
+    display_processing_status()
+
+    # Main dashboard tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["🏠 Agent Overview", "📊 Market Data", "📝 Task Assignment", "📈 Performance Metrics", "📋 Task History"])
+
+    with tab1:
+        st.header("Agent Status Dashboard")
+        display_agent_cards()
+
+    with tab2:
+        st.header("📊 Market Data & Analysis")
+
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.subheader("🏢 Stock Analysis")
+            symbol = st.selectbox("Select Stock Symbol:",
+                                  ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX'])
+
+            if st.button("📈 Get Stock Data", key="get_stock_data"):
+                with st.spinner(f"Fetching data for {symbol}..."):
+                    stock_data = manager.market_provider.get_stock_price(symbol.upper(), use_cache=False)
+
+                    if "error" not in stock_data:
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Current Price", f"${stock_data['current_price']:.2f}")
+                        with col2:
+                            daily_change = stock_data['current_price'] - stock_data['open']
+                            daily_change_pct = (daily_change / stock_data['open']) * 100
+                            st.metric("Daily Change", f"${daily_change:.2f}", f"{daily_change_pct:+.2f}%")
+                        with col3:
+                            st.metric("Volume", f"{stock_data['volume']:,}")
+
+                        # Detailed data
+                        st.subheader(f"📊 Detailed Data for {symbol.upper()}")
+                        detail_cols = st.columns(3)
+                        with detail_cols[0]:
+                            st.write(f"**Open:** ${stock_data['open']:.2f}")
+                            st.write(f"**High:** ${stock_data['high']:.2f}")
+                        with detail_cols[1]:
+                            st.write(f"**Low:** ${stock_data['low']:.2f}")
+                            st.write(f"**P/E Ratio:** {stock_data.get('pe_ratio', 0):.2f}")
+                        with detail_cols[2]:
+                            st.write(f"**Market Cap:** ${stock_data.get('market_cap', 0):,.0f}")
+
+                        st.caption(f"⏱ Updated: {stock_data['timestamp']}")
+                    else:
+                        st.error(f"Error fetching data: {stock_data['error']}")
+
+        with col_right:
+            st.subheader("💰 Cryptocurrency Prices")
+            crypto_data = manager.market_provider.get_crypto_prices(use_cache=True)
+
+            if crypto_data:
+                for symbol, data in crypto_data.items():
+                    change_color = "normal" if data["change_24h"] >= 0 else "inverse"
+                    st.metric(
+                        label=symbol.replace("-USD", ""),
+                        value=f"${data['current_price']:.2f}",
+                        delta=f"{data['change_24h']:+.2f}%",
+                        delta_color=change_color
+                    )
+
+        # Market Overview Section
+        st.subheader("🌍 Market Overview")
+        market_overview = manager.get_market_dashboard_data(use_cache=True)
+
+        if "error" not in market_overview.get("market_overview", {}):
+            overview_cols = st.columns(3)
+            market_data_overview = market_overview["market_overview"]
+
+            for i, (index, data) in enumerate(market_data_overview.items()):
+                with overview_cols[i % 3]:
+                    change_color = "normal" if data["change_percent"] >= 0 else "inverse"
+                    index_name = index.replace("^", "")
+                    if index_name == "GSPC":
+                        index_name = "S&P 500"
+                    elif index_name == "DJI":
+                        index_name = "Dow Jones"
+                    elif index_name == "IXIC":
+                        index_name = "NASDAQ"
+
+                    st.metric(
+                        index_name,
+                        f"{data['current']:.2f}",
+                        f"{data['change_percent']:.2f}%",
+                        delta_color=change_color
+                    )
+
+    with tab3:
+        st.header("📝 Task Assignment")
+
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            st.subheader("🎯 Custom Task Assignment")
+
+            selected_agent = st.selectbox(
+                "Select Agent:",
+                options=list(manager.agents.keys()),
+                format_func=lambda x: manager.agents[x].name
+            )
+
+            task_description = st.text_area(
+                "Task Description:",
+                height=100,
+                placeholder="Enter a detailed task description. Mention specific stock symbols for data analysis...",
+                help="Be specific about what you want the agent to analyze or accomplish."
+            )
+
+            priority = st.selectbox(
+                "Priority Level:",
+                options=[TaskPriority.LOW, TaskPriority.MEDIUM, TaskPriority.HIGH, TaskPriority.CRITICAL],
+                format_func=lambda x: x.name,
+                index=1  # Default to MEDIUM
+            )
+
+            if st.button("🚀 Assign Task", type="primary"):
+                if task_description.strip():
+                    task_id = manager.assign_task(selected_agent, task_description, priority)
+                    st.success(f"✅ Task {task_id} assigned successfully!")
+
+                    # Show immediate feedback
+                    st.info("🔄 Task processing has started in the background. Check the Task History tab for results.")
+                else:
+                    st.error("❌ Please enter a task description")
+
+        with col2:
+            st.subheader("⚡ Quick Tasks")
+
+            quick_tasks = {
+                "📊 Analyze AAPL Stock": (
+                    "Provide comprehensive analysis of AAPL stock including technical indicators, market sentiment, and trading recommendations",
+                    "quant_analyst"),
+                "⚠️ Market Risk Assessment": (
+                    "Evaluate current market risk across major indices and provide risk mitigation recommendations",
+                    "risk_modeler"),
+                "💎 Crypto Market Analysis": (
+                    "Analyze cryptocurrency market trends, identify opportunities, and assess portfolio allocation strategies",
+                    "trading_strategist"),
+                "🎯 Portfolio Optimization": (
+                    "Suggest portfolio optimization strategies based on current market conditions and risk parameters",
+                    "ml_engineer"),
+                "📋 Compliance Check": ("Review recent trading activities and recommendations for regulatory compliance",
+                                       "compliance_officer"),
+                "📈 Performance Report": ("Generate comprehensive performance analysis with actionable insights",
+                                         "translator"),
+                "🔍 Data Quality Audit": ("Assess data quality, identify potential issues, and recommend improvements",
+                                         "data_engineer"),
+                "🛡️ Risk Model Review": ("Review and validate current risk models against market conditions",
+                                         "risk_modeler"),
+                "⚖️ Ethics Assessment": ("Evaluate current trading strategies for ethical compliance and fairness",
+                                         "ethicist"),
+                "🏗️ Architecture Review": ("Review system architecture and recommend scalability improvements",
+                                           "architect")
+            }
+
+            for task_name, (description, agent_key) in quick_tasks.items():
+                if st.button(task_name, key=f"quick_{task_name}", use_container_width=True):
+                    task_id = manager.assign_task(agent_key, description, TaskPriority.HIGH)
+                    st.success(f"✅ {task_name} assigned!")
+
+    with tab4:
+        st.header("📈 Performance Metrics & Analytics")
+
+        status = manager.get_system_status()
+
+        # System overview metrics
+        metric_cols = st.columns(4)
+        with metric_cols[0]:
+            st.metric("Total Tasks", status["total_tasks"])
+        with metric_cols[1]:
+            success_rate = (status["completed_tasks"] / status["total_tasks"] * 100) if status["total_tasks"] > 0 else 0
+            st.metric("Success Rate", f"{success_rate:.1f}%")
+        with metric_cols[2]:
+            avg_response_time = np.mean([agent.metrics.avg_processing_time for agent in manager.agents.values() if
+                                         agent.metrics.avg_processing_time > 0])
+            st.metric("Avg Response Time", f"{avg_response_time:.2f}s" if avg_response_time > 0 else "N/A")
+        with metric_cols[3]:
+            total_errors = sum(agent.metrics.errors_count for agent in manager.agents.values())
+            st.metric("Total Errors", total_errors)
+
+        # Agent performance comparison
+        st.subheader("🔍 Agent Performance Analysis")
+
+        agent_data = []
+        for key, agent in manager.agents.items():
+            agent_data.append({
+                "Agent": agent.name,
+                "Tasks Completed": agent.metrics.tasks_completed,
+                "Success Rate": agent.metrics.success_rate,
+                "Avg Processing Time": agent.metrics.avg_processing_time,
+                "Errors": agent.metrics.errors_count,
+                "API Calls": agent.metrics.api_calls_made,
+                "Status": agent.status.value,
+                "AI Enabled": "Yes" if agent.gemini_client.model else "No"
+            })
+
+        df = pd.DataFrame(agent_data)
+
+        if not df.empty and df["Tasks Completed"].sum() > 0:
+            # Performance charts
+            chart_cols = st.columns(2)
+
+            with chart_cols[0]:
+                fig1 = px.bar(df, x="Agent", y="Tasks Completed",
+                              title="📊 Tasks Completed by Agent",
+                              color="Success Rate",
+                              color_continuous_scale="Viridis",
+                              hover_data=["API Calls", "Errors"])
+                fig1.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig1, use_container_width=True)
+
+            with chart_cols[1]:
+                fig2 = px.scatter(df, x="Tasks Completed", y="Success Rate",
+                                  size="API Calls", color="Agent",
+                                  title="🎯 Success Rate vs Tasks Completed",
+                                  hover_data=["Avg Processing Time", "Errors"])
+                st.plotly_chart(fig2, use_container_width=True)
+
+            # Detailed performance table
+            st.subheader("📋 Detailed Performance Table")
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("📊 No performance data available yet. Assign and complete some tasks to see analytics.")
+
+    with tab5:
+        st.header("📋 Task History & Results")
+
+        # Get all task results
+        all_tasks = manager.task_history + list(st.session_state.task_results.values())
+
+        if all_tasks:
+            # Filter controls
+            filter_cols = st.columns(3)
+            with filter_cols[0]:
+                status_filter = st.multiselect(
+                    "Filter by Status:",
+                    ["Pending", "Completed", "Failed"],
+                    default=["Pending", "Completed", "Failed"]
+                )
+            with filter_cols[1]:
+                agent_filter = st.multiselect(
+                    "Filter by Agent:",
+                    [agent.name for agent in manager.agents.values()],
+                    default=[agent.name for agent in manager.agents.values()]
+                )
+            with filter_cols[2]:
+                priority_filter = st.multiselect(
+                    "Filter by Priority:",
+                    [p.name for p in TaskPriority],
+                    default=[p.name for p in TaskPriority]
+                )
+
+            # Create task history dataframe
+            task_data = []
+            for task in all_tasks:
+                agent_name = next(
+                    (agent.name for agent in manager.agents.values() if agent.agent_id == task.agent_id),
+                    "Unknown"
+                )
+
+                if (task.status in status_filter and
+                        agent_name in agent_filter and
+                        task.priority.name in priority_filter):
+                    task_data.append({
+                        "Task ID": task.id,
+                        "Agent": agent_name,
+                        "Description": task.description[:80] + "..." if len(
+                            task.description) > 80 else task.description,
+                        "Priority": task.priority.name,
+                        "Status": task.status,
+                        "Created": task.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        "Completed": task.completed_at.strftime("%Y-%m-%d %H:%M:%S") if task.completed_at else "-",
+                        "Processing Time": f"{task.processing_time:.2f}s" if hasattr(task,
+                                                                                     'processing_time') and task.processing_time > 0 else "-",
+                        "Has Result": "Yes" if task.result else "No"
+                    })
+
+            if task_data:
+                st.subheader(f"📊 Found {len(task_data)} tasks")
+                df_tasks = pd.DataFrame(task_data)
+
+                # Display tasks table
+                st.dataframe(df_tasks, use_container_width=True, height=400)
+
+                # Task details section
+                st.subheader("🔍 Task Details")
+
+                if task_data:
+                    selected_task_id = st.selectbox(
+                        "Select Task for Details:",
+                        [task["Task ID"] for task in task_data],
+                        key="task_detail_selector"
+                    )
+
+                    task_detail = next((task for task in all_tasks if task.id == selected_task_id), None)
+
+                    if task_detail:
+                        # Task info
+                        info_cols = st.columns(4)
+                        with info_cols[0]:
+                            st.metric("Status", task_detail.status)
+                        with info_cols[1]:
+                            st.metric("Priority", task_detail.priority.name)
+                        with info_cols[2]:
+                            if hasattr(task_detail, 'processing_time') and task_detail.processing_time > 0:
+                                st.metric("Processing Time", f"{task_detail.processing_time:.2f}s")
+                            else:
+                                st.metric("Processing Time", "N/A")
+                        with info_cols[3]:
+                            st.metric("Created", task_detail.created_at.strftime("%H:%M:%S"))
+
+                        # Task description
+                        st.subheader("📝 Task Description")
+                        st.text_area("Description:", value=task_detail.description, height=100, disabled=True,
+                                     key="task_desc_display")
+
+                        # Task result
+                        if task_detail.result:
+                            st.subheader("📋 Task Result")
+                            st.text_area("Result:", value=task_detail.result, height=300, disabled=True,
+                                         key="task_result_display")
+
+                            # Download result button
+                            st.download_button(
+                                label="📥 Download Result",
+                                data=task_detail.result,
+                                file_name=f"task_{task_detail.id}_result.txt",
+                                mime="text/plain"
+                            )
+
+                        # Market data used
+                        if task_detail.market_data:
+                            st.subheader("📊 Associated Market Data")
+                            if isinstance(list(task_detail.market_data.values())[0], MarketData):
+                                market_dict = {}
+                                for symbol, data in task_detail.market_data.items():
+                                    market_dict[symbol] = {
+                                        "current_price": data.current_price,
+                                        "change_percent": data.change_percent,
+                                        "volume": data.volume,
+                                        "timestamp": data.timestamp.isoformat()
+                                    }
+                                st.json(market_dict)
+                            else:
+                                st.json(task_detail.market_data)
+            else:
+                st.info("🔍 No tasks match the current filters")
+        else:
+            st.info("📋 No task history available. Assign some tasks to get started!")
+
+    # Footer with enhanced status
+    st.markdown("---")
+    footer_cols = st.columns(4)
+
+    with footer_cols[0]:
+        gemini_status = "🟢 Connected" if GEMINI_API_KEY else "🔴 Not Configured"
+        st.write(f"**Gemini AI:** {gemini_status}")
+
+    with footer_cols[1]:
+        st.write(f"**Market Data:** 🟢 yfinance Active")
+
+    with footer_cols[2]:
+        processing_count = len(st.session_state.processing_tasks)
+        if processing_count > 0:
+            st.write(f"**Processing:** 🔄 {processing_count} task(s)")
+        else:
+            st.write(f"**Processing:** ✅ None")
+
+    with footer_cols[3]:
+        st.write(f"**Last Updated:** {datetime.datetime.now().strftime('%H:%M:%S')}")
+
+    # Auto-refresh functionality
+    if st.session_state.auto_refresh:
+        time.sleep(30)
+        st.rerun()
+
+
+# Real-time task monitoring
+def monitor_task_completion():
+    """Monitor task completion and update UI accordingly"""
+    completed_tasks = []
+
+    # Check for newly completed tasks
+    for task_id in list(st.session_state.processing_tasks):
+        if task_id in st.session_state.task_results:
+            task = st.session_state.task_results[task_id]
+            if task.status in ["Completed", "Failed"]:
+                completed_tasks.append(task)
+                st.session_state.processing_tasks.discard(task_id)
+
+    return completed_tasks
+
+
+# Enhanced task execution with progress tracking
+def execute_task_with_progress(agent, task):
+    """Execute task with progress tracking"""
+    progress_placeholder = st.empty()
+
+    with progress_placeholder.container():
+        st.info(f"🔄 Processing task {task.id} with {agent.name}...")
+        progress_bar = st.progress(0)
+
+        # Simulate progress updates
+        for i in range(100):
+            time.sleep(0.01)  # Small delay for visual effect
+            progress_bar.progress(i + 1)
+
+        st.success(f"✅ Task {task.id} completed!")
+
+    progress_placeholder.empty()
+
+
+# Background task processor
+def background_task_processor():
+    """Process tasks in background without blocking UI"""
+    manager = get_manager()
+
+    while True:
+        for agent in manager.agents.values():
+            if agent.tasks_queue and agent.status == AgentStatus.IDLE:
+                task = agent.execute_next_task()
+                if task:
+                    add_notification(f"Started processing task {task.id}", 'info')
+
+        time.sleep(5)  # Check every 5 seconds
+
+
+# Enhanced error handling
+def handle_api_error(error, context=""):
+    """Handle API errors gracefully"""
+    error_msg = str(error)
+
+    if "rate limit" in error_msg.lower():
+        add_notification("⚠️ API rate limit reached. Please wait before making more requests.", 'warning')
+    elif "authentication" in error_msg.lower():
+        add_notification("🔑 API authentication failed. Please check your API keys.", 'error')
+    elif "network" in error_msg.lower() or "connection" in error_msg.lower():
+        add_notification("🌐 Network error. Please check your connection.", 'warning')
+    else:
+        add_notification(f"❌ Error in {context}: {error_msg}", 'error')
+
+
+# Market data update scheduler
+def schedule_market_data_updates():
+    """Schedule periodic market data updates"""
+    if 'last_market_update' in st.session_state:
+        time_since_update = datetime.datetime.now() - st.session_state.last_market_update
+
+        # Update market data every 5 minutes
+        if time_since_update.total_seconds() > 300:
+            try:
+                manager = get_manager()
+                manager.market_provider.cache.clear()  # Clear cache for fresh data
+                st.session_state.last_market_update = datetime.datetime.now()
+                add_notification("📈 Market data updated", 'info')
+            except Exception as e:
+                handle_api_error(e, "market data update")
+
+
+# Performance optimization utilities
+def optimize_dataframe_display(df, max_rows=1000):
+    """Optimize dataframe display for large datasets"""
+    if len(df) > max_rows:
+        st.warning(f"⚠️ Showing first {max_rows} rows of {len(df)} total rows for performance.")
+        return df.head(max_rows)
+    return df
+
+
+# Session state cleanup
+def cleanup_old_tasks():
+    """Clean up old completed tasks to prevent memory issues"""
+    if len(st.session_state.task_results) > 100:  # Keep only last 100 tasks
+        # Sort by completion time and keep most recent
+        sorted_tasks = sorted(
+            st.session_state.task_results.items(),
+            key=lambda x: x[1].completed_at or datetime.datetime.min,
+            reverse=True
+        )
+
+        # Keep only the 50 most recent tasks
+        recent_tasks = dict(sorted_tasks[:50])
+        st.session_state.task_results = recent_tasks
+
+        add_notification("🧹 Cleaned up old task history for better performance", 'info')
+
+
+# Enhanced UI components
+def create_status_indicator(status, size="small"):
+    """Create animated status indicators"""
+    indicators = {
+        "active": "🟢",
+        "processing": "🔄",
+        "idle": "🟡",
+        "error": "🔴",
+        "success": "✅",
+        "warning": "⚠️"
+    }
+
+    icon = indicators.get(status.lower(), "⚪")
+
+    if status.lower() == "processing":
+        return f'<span class="processing-indicator">{icon}</span>'
+
+    return icon
+
+
+def create_progress_card(title, value, delta=None, status="normal"):
+    """Create enhanced progress cards"""
+    delta_html = ""
+    if delta is not None:
+        delta_color = "green" if delta >= 0 else "red"
+        delta_symbol = "↗" if delta >= 0 else "↘"
+        delta_html = f'<div style="color: {delta_color}; font-size: 0.8em;">{delta_symbol} {delta}</div>'
+
+    return f"""
+    <div class="task-card">
+        <h4 style="margin: 0; color: #1f77b4;">{title}</h4>
+        <div style="font-size: 2em; font-weight: bold; margin: 10px 0;">{value}</div>
+        {delta_html}
+    </div>
+    """
+
+
+# Main application with enhanced error handling
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
+        st.info("Please refresh the page to continue.")
+
+        # Log error for debugging
+        logger.error(f"Application error: {e}", exc_info=True)
+
+        # Provide fallback UI
+        if st.button("🔄 Refresh Page"):
+            st.rerun()
