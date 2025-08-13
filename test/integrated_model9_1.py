@@ -1134,10 +1134,10 @@ def main():
                                     st.write(f"**Processing Time:** {processing_time:.2f}s")
 
                             st.markdown("**📝 Task Description:**")
-                            st.text_area("", selected_task.description, height=80, key="desc_readonly", disabled=True)
+                            st.write(selected_task.description)
 
                             st.markdown("**🤖 AI Generated Result:**")
-                            st.text_area("", selected_task.result, height=300, key="result_readonly", disabled=True)
+                            st.write(selected_task.result)
 
                             if selected_task.market_data:
                                 st.markdown("**📊 Associated Market Data:**")
